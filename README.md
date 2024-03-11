@@ -1,0 +1,2 @@
+# mediapipe_pyqt5_posture_detection
+mediapipe_pyqt5_posture_detection
