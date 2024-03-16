@@ -1,19 +1,24 @@
-import mediapipe
+import time
+
 import PyQt5
 from posture_qt import Ui_MainWindow
 import sys
 from PyQt5.QtWidgets import QMessageBox, QFileDialog, QLineEdit
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import *
+from qfluentwidgets import *
 import mediapipe as mp
 import cv2
 
 import matplotlib
-
+from pylab import *
+mpl.rcParams['font.sans-serif'] = ['SimHei']
+mpl.rcParams['axes.unicode_minus'] = False
 matplotlib.use("Qt5Agg")  # 声明使用QT5
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
 import numpy as np
 
@@ -21,17 +26,38 @@ import math
 
 
 class MyFigure(FigureCanvas):
-    def __init__(self, width=5, height=4, dpi=100):
+    def __init__(self, width=20, height=18, dpi=80):
         # 第一步：创建一个创建Figure
         self.fig = Figure(figsize=(width, height), dpi=dpi)
+        # self.fig = plt.figure(figsize=(width, height), dpi=dpi)
+        self.fig_motion = Figure(figsize=(width, height))
         # self.fig = plt.figure
         # 第二步：在父类中激活Figure窗口
         super(MyFigure, self).__init__(self.fig)  # 此句必不可少，否则不能显示图形
         # 第三步：创建一个子图，用于绘制图形用，111表示子图编号，如matlab的subplot(1,1,1)
         self.axes = self.fig.add_subplot(111, projection="3d")
+        self.axes.set_facecolor('#ADD8E6')  # 天蓝
+        self.motion_graph = self.fig_motion.add_subplot(111)
+
         # self.axes = None
     # 第四步：就是画图，【可以在此类中画，也可以在其它类中画】
 
+
+class Motion_Figure(FigureCanvas):
+    def __init__(self, width=20, height=18, dpi=80):
+        # 第一步：创建一个创建Figure
+        self.fig_motion = Figure(figsize=(width, height), dpi=dpi)
+        # self.fig = plt.figure
+        # 第二步：在父类中激活Figure窗口
+        super(Motion_Figure, self).__init__(self.fig_motion)  # 此句必不可少，否则不能显示图形
+        # 第三步：创建一个子图，用于绘制图形用，111表示子图编号，如matlab的subplot(1,1,1)
+        self.motion_graph = self.fig_motion.add_subplot(111)
+        self.motion_graph.set_facecolor('#66ccff')
+
+    def update(self, x, y):
+        self.motion_graph.set_xdata(x)
+        self.motion_graph.set_ydata(y)
+        self.fig_motion.draw()
 
 def cal_angle_3D(point_a, point_b, point_c):
     # a_x, b_x, c_x = point_a[0], point_b[0], point_c[0]  # 点a、b、c的x坐标
@@ -66,8 +92,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.holistic = self.mp_holistic.Holistic(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5)
-        self.figure_draw = MyFigure()
+        self.figure_draw = MyFigure()  # 三维动图
         self.open_motion = False
+        self.arm_angle = 0
+        self.position = 0
+        self.overturn = False
+
         # self.groupBox = QtWidgets.QGroupBox(self.plt3d_module)
         # self.groupBox.setMinimumSize(QSize(1100, 610))
         # self.groupBox.setTitle("画图demo")
@@ -78,10 +108,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.camera_timer = QTimer()
         self.read_img = QTimer()
         self.start_exercise = QTimer()
+        self.motion_draw = QTimer()
 
         self.camera_timer.timeout.connect(self.show_image)
         self.read_img.timeout.connect(self.posture_mediapipe_writer_timer)
         self.start_exercise.timeout.connect(self.motion_detection_timer)
+        self.motion_draw.timeout.connect(self.motion_draw_flow_timer)
         # self.camera_timer2.timeout.connect(self.open_vedio)
         # 打开摄像头
         self.pushButton_1.clicked.connect(self.open_camera)
@@ -91,19 +123,34 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.pushButton_3.clicked.connect(self.posture_mediapipe)
         # 开始运动
         self.pushButton_4.clicked.connect(self.motion_detection)
+        self.pushButton_4.clicked.connect(self.motion_draw_flow)
+
+        self.pushButton_5.clicked.connect(self.read_online_cap)
 
         self.pushButton_1.setEnabled(True)
         # 初始状态不能关闭摄像头
         self.pushButton_2.setEnabled(False)
 
     def open_camera(self):
+        self.camera_timer.stop()
         # self.cap = cv2.VideoCapture("5njf7-yoqfb.avi")  # 摄像头
         self.cap = cv2.VideoCapture(0)
-
+        self.label.clear()
+        # self.cap = cv2.VideoCapture("http://admin:admin@192.168.3.226:8081/")
+        self.overturn = False
         self.label.setScaledContents(True)
         # self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 930)
         self.camera_timer.start(40)  # 每40毫秒读取一次，即刷新率为25帧
-        self.show_image()
+        # self.show_image()
+
+    def read_online_cap(self):
+        self.camera_timer.stop()
+        self.cap = cv2.VideoCapture("http://admin:admin@192.168.3.226:8081/")
+        self.label.setScaledContents(True)
+        self.label.clear()
+        time.sleep(2)
+        self.overturn = True
+        self.camera_timer.start(40)
 
     def show_image(self):
         flag, self.image = self.cap.read()  # 从视频流中读取图片
@@ -116,9 +163,19 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.image = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
         self.posture_mediapipe_draw()
         if self.open_motion:
-            cv2.putText(self.image, "counter{}".format(self.motion_detection_counter), (400, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 0, 0), thickness=3)
+            lable_show_str = "当前运动:{}\ncounter:{}".format(self.item, self.motion_detection_counter)
+            self.label_2.setText(lable_show_str)
+            # cv2.putText(self.image, "counter{}".format(self.motion_detection_counter), (400, 30),
+            #             cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 0, 0), thickness=3)
         self.showImage = QtGui.QImage(self.image.data, self.height, self.width, QtGui.QImage.Format_RGB888)
+        if self.overturn:
+            transform = QtGui.QTransform()
+            center = self.showImage.rect().center()
+            transform.translate(center.x(), center.y())
+            transform.rotate(270)
+            transform.scale(1, -1)
+            # transform.translate(-center.x(), -center.y())
+            self.showImage = self.showImage.transformed(transform)
         self.label.setPixmap(QtGui.QPixmap.fromImage(self.showImage))  # 往显示视频的Label里显示QImage
 
     def posture_mediapipe_draw(self):
@@ -155,9 +212,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.figure_draw.axes.set_xlim3d(-0.5, 1.5)
         self.figure_draw.axes.set_ylim3d(-1.5, 0.5)
         self.figure_draw.axes.set_zlim3d(-3, 1)
-        # self.figure_draw.axes.set_xlim3d(-1, 1)
-        # self.figure_draw.axes.set_ylim3d(-1, 1)
-        # self.figure_draw.axes.set_zlim3d(-1, 1)
+        # self.figure_draw.axes.set_xlim3d(-0.5, 0.5)
+        # self.figure_draw.axes.set_ylim3d(-0.5, 0.5)
+        # self.figure_draw.axes.set_zlim3d(-0.8, 0.2)
         if self.results.pose_landmarks:
             landmarks = []
             for index, landmark in enumerate(self.results.pose_landmarks.landmark):
@@ -170,19 +227,22 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 self.figure_draw.axes.plot([landmarks[_c[0], 0], landmarks[_c[1], 0]],
                                            [landmarks[_c[0], 1], landmarks[_c[1], 1]],
                                            [landmarks[_c[0], 2], landmarks[_c[1], 2]], 'k')
+
             # self.gridLayout_plt.addWidget(self.figure_draw)
             # plt.pause(0.001)
             self.figure_draw.draw()
 
     def motion_detection(self):
-        self.motion_detection_flag = True
-        self.open_motion = True
         self.motion_detection_counter = 0
         items = ("举哑铃", "高抬腿", "下蹲")
         self.item, self.chosen_spot = \
-            QtWidgets.QInputDialog.getItem(self, "选择做哪个运动呢", "运动选择:", items, 0, False)
+            QtWidgets.QInputDialog.getItem(self, "做哪个运动呢", "运动选择:", items, 0, False)
         print(self.item, self.chosen_spot)
+        self.motion_detection_flag = True
+        self.open_motion = True
         self.pushButton_2.setEnabled(True)
+        self.label_2.setStyleSheet("color:red")
+        self.label_2.setLineWidth(3)
         self.start_exercise.start(40)
         self.motion_detection_timer()
 
@@ -198,14 +258,32 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                            self.results.pose_landmarks.landmark[15].y * self.height,
                            self.results.pose_landmarks.landmark[15].z]
             # print(right_shoulder, right_elbow, right_wrist)
-            arm_angle = cal_angle_3D(right_shoulder, right_elbow, right_wrist)
-            print(arm_angle, self.motion_detection_flag)
-            if arm_angle <= 40 and self.motion_detection_flag:
+            self.arm_angle = cal_angle_3D(right_shoulder, right_elbow, right_wrist)
+            print(self.arm_angle, self.motion_detection_flag)
+            if self.arm_angle <= 40 and self.motion_detection_flag:
                 self.motion_detection_counter = self.motion_detection_counter + 1
                 self.motion_detection_flag = False
-            if arm_angle >= 150 and not self.motion_detection_flag:
+            if self.arm_angle >= 150 and not self.motion_detection_flag:
                 self.motion_detection_flag = True
 
+    def motion_draw_flow(self):
+        self.figure_motion = plt.figure()
+        self.canvas = FigureCanvas(self.figure_motion)
+        self.gridLayout_motion.addWidget(self.canvas)
+        self.ax = self.figure_motion.add_axes([0.1, 0.1, 0.8, 0.8])
+        self.ax.set_facecolor('#ADD8E6')
+        self.arm_angle_list = []
+        self.motion_draw.start(500)
+
+    def motion_draw_flow_timer(self):
+        self.arm_angle_list.append(180 - self.arm_angle)
+        self.ax.clear()
+        self.ax.set_ylim(0, 190)
+        self.ax.set_xlim(0, 45)
+        self.ax.plot(self.arm_angle_list, color='#FF69B4', linewidth=3.0)
+        if len(self.arm_angle_list) >= 40:
+            self.arm_angle_list.pop(0)
+        self.canvas.draw()
     # 停止运动
     def stop_motion(self):
         # self.label.clear()
@@ -237,6 +315,16 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     #         # 视频流置于label中间部分播放
     #         self.label.setAlignment(Qt.AlignCenter)
     #         self.label.setPixmap(pixmap)
+
+
+class CommonHelper:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def readQss(style):
+        with open(style, 'r') as f:
+            return f.read()
 
 
 if __name__ == '__main__':
